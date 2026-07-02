@@ -836,6 +836,69 @@ class SineGaussian(Waveform):
         return "SineGaussian()"
 
 
+class DarkPhotonWaveform(Waveform):
+    """Wraps a base frequency-domain waveform to model dark-photon dipole radiation.
+
+    Evaluates the base waveform at half the requested frequency (dipole
+    radiation sourced by the charges ``q1``, ``q2`` is emitted at the orbital
+    frequency rather than twice the orbital frequency), and rescales the
+    resulting amplitude by a charge-dependent factor.
+
+    Attributes:
+        base_waveform (Waveform): The underlying waveform model to wrap.
+    """
+
+    base_waveform: Waveform
+
+    def __init__(self, base_waveform: Waveform) -> None:
+        """
+        Args:
+            base_waveform (Waveform): Waveform instance to wrap, e.g. ``IMRPhenomD()``.
+        """
+        self.base_waveform = base_waveform
+
+    @property
+    def parameter_names(self) -> tuple[str, ...]:
+        return (*self.base_waveform.parameter_names, "q1", "q2")
+
+    def _amplitude_scale(self, q1: Float, q2: Float) -> Float:
+        """Charge-dependent amplitude scaling factor.
+
+        Args:
+            q1 (Float): Charge of body 1.
+            q2 (Float): Charge of body 2.
+        """
+        # TODO: implement charge-dependent amplitude scaling
+        raise NotImplementedError
+
+    def __call__(
+        self, frequency: Float[Array, " n_freq"], params: dict[str, Float]
+    ) -> dict[str, Complex[Array, " n_freq"]]:
+        """Evaluate the dark-photon-modulated waveform.
+
+        Args:
+            frequency (Float[Array, " n_freq"]): Frequency array in Hz.
+            params (dict[str, Float]): Source parameters for ``base_waveform``,
+                plus ``q1`` and ``q2`` (dark-photon charges of bodies 1 and 2).
+
+        Returns:
+            dict[str, Complex[Array, " n_freq"]]: Plus (``"p"``) and cross (``"c"``)
+                polarizations.
+        """
+        base_params = {
+            k: v for k, v in params.items() if k not in ("q1", "q2")
+        }
+        base_hphc = self.base_waveform(frequency / 2.0, base_params)
+        amp_scale = self._amplitude_scale(params["q1"], params["q2"])
+        return {
+            "p": base_hphc["p"] * amp_scale,
+            "c": base_hphc["c"] * amp_scale,
+        }
+
+    def __repr__(self):
+        return f"DarkPhotonWaveform(base_waveform={self.base_waveform!r})"
+
+
 #: Mapping from model name strings to ``Waveform`` subclasses.
 #: Useful for selecting waveform models by name at runtime, e.g. from a
 #: configuration file.
