@@ -15,6 +15,7 @@ from ripplegw.waveforms.IMRPhenomXP import gen_IMRPhenomXP_hphc
 from ripplegw.waveforms.IMRPhenomXPHM import generate_xphm
 from ripplegw.waveforms.SineGaussian import gen_SineGaussian_hphc
 from ripplegw.conversions import Mc_eta_to_ms
+from ripplegw.constants import MTSUN
 
 
 class Waveform(ABC):
@@ -839,10 +840,11 @@ class SineGaussian(Waveform):
 class DarkPhotonWaveform(Waveform):
     """Wraps a base frequency-domain waveform to model dark-photon dipole radiation.
 
-    Evaluates the base waveform at half the requested frequency (dipole
-    radiation sourced by the charges ``q1``, ``q2`` is emitted at the orbital
-    frequency rather than twice the orbital frequency), and rescales the
-    resulting amplitude by a charge-dependent factor.
+    Generates the base waveform face-on (``iota=0``), decomposes its plus and
+    cross polarizations into amplitude and phase, and reconstructs the
+    dark-photon waveform with half the base GW phase. The inclination
+    dependence (removed by generating at ``iota=0``) and the charge-dependent
+    amplitude scaling are both reintroduced in ``_amplitude_scale``.
 
     Attributes:
         base_waveform (Waveform): The underlying waveform model to wrap.
@@ -861,15 +863,32 @@ class DarkPhotonWaveform(Waveform):
     def parameter_names(self) -> tuple[str, ...]:
         return (*self.base_waveform.parameter_names, "q1", "q2")
 
-    def _amplitude_scale(self, q1: Float, q2: Float) -> Float:
-        """Charge-dependent amplitude scaling factor.
+    def _amplitude_scale(
+        self,
+        freq: Float[Array, " n_freq"],
+        params: dict[str, Float],
+    ) -> Float[Array, " n_freq"]:
+        """Charge- and inclination-dependent amplitude scaling.
 
         Args:
-            q1 (Float): Charge of body 1.
-            q2 (Float): Charge of body 2.
+            amp (Float[Array, " n_freq"]): Plus-polarization amplitude of the
+                base waveform, generated at ``iota=0``.
+            params (dict[str, Float]): Full source parameter dictionary passed
+                to ``__call__`` (includes ``q1``, ``q2``, ``iota``, and all of
+                ``base_waveform.parameter_names``).
+
+        Returns:
+            Float[Array, " n_freq"]: Scaled amplitude.
         """
-        # TODO: implement charge-dependent amplitude scaling
-        raise NotImplementedError
+        delta = params["sigma_1"] - params["sigma_2"]
+        total_mass = params["Mc"] * jnp.power(params["eta"], -3.0 / 5.0)
+        total_mass *= MTSUN
+        conv = (
+            (jnp.pi ** (2.0 / 3.0) * delta)
+            / (4.0 * total_mass ** (1.0 / 3.0))
+            * freq ** (2.0 / 3.0)
+        )
+        return conv
 
     def __call__(
         self, frequency: Float[Array, " n_freq"], params: dict[str, Float]
@@ -885,14 +904,26 @@ class DarkPhotonWaveform(Waveform):
             dict[str, Complex[Array, " n_freq"]]: Plus (``"p"``) and cross (``"c"``)
                 polarizations.
         """
-        base_params = {
-            k: v for k, v in params.items() if k not in ("q1", "q2")
-        }
+        base_params = {k: v for k, v in params.items() if k not in ("q1", "q2")}
+        # extract the iota and the phase_c
+        iota = base_params["iota"]
+        phase_c = base_params["phase_c"]
+        # set iota to zero for easier amplitude and phase extraction
+        base_params["iota"] = 0.0
+        base_params["phase_c"] = 0.0
         base_hphc = self.base_waveform(frequency / 2.0, base_params)
-        amp_scale = self._amplitude_scale(params["q1"], params["q2"])
+
+        amp = jnp.abs(base_hphc["p"])
+        phase = jnp.unwrap(jnp.angle(base_hphc["p"]))
+
+        scale = self._amplitude_scale(frequency, params)
+        phase_EM = phase / 2.0 + phase_c
+        amp_EM = amp * scale
+
+        # the SPA's pi/4 phase correction is absorbed in the phase_c
         return {
-            "p": base_hphc["p"] * amp_scale,
-            "c": base_hphc["c"] * amp_scale,
+            "p": amp_EM * jnp.exp(1j * phase_EM),
+            "c": amp_EM * jnp.cos(iota) * (-1j) * jnp.exp(1j * phase_EM),
         }
 
     def __repr__(self):

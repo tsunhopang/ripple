@@ -28,6 +28,7 @@ from ripplegw import (
     IMRPhenomXP,
     IMRPhenomXPHM,
     SineGaussian,
+    DarkPhotonWaveform,
     waveform_preset,
 )
 from ripplegw.conversions import ms_to_Mc_eta, lambdas_to_lambda_tildes
@@ -54,6 +55,17 @@ def bbh_aligned_dict():
         "d_L": 400.0,
         "phase_c": 0.5,
         "iota": 0.8,
+    }
+
+
+@pytest.fixture(scope="module")
+def darkphoton_dict(bbh_aligned_dict):
+    """Dict params for DarkPhotonWaveform wrapping an aligned-spin BBH base."""
+    return {
+        **bbh_aligned_dict,
+        "sigma_1": 0.3,
+        "sigma_2": 0.1,
+        "Mc": bbh_aligned_dict["M_c"],
     }
 
 
@@ -798,6 +810,63 @@ class TestSineGaussian:
         """e = 1: purely linear polarisation (sqrt(1 - e^2) -> 0)."""
         params = {"Q": 10.0, "f_0": 100.0, "hrss": 1e-21, "phase": 0.5, "e": 1.0}
         assert_approx_td_valid(model(edge_time_grid, params), edge_time_grid)
+
+
+class TestDarkPhotonWaveform:
+    @pytest.fixture(scope="class")
+    def model(self):
+        """JIT-compiled DarkPhotonWaveform wrapping IMRPhenomD."""
+        return jax.jit(DarkPhotonWaveform(IMRPhenomD(f_ref=20.0)))
+
+    # --- top-level approximant class ---
+    def test_basic(self, model, edge_freq_grid, darkphoton_dict):
+        output = model(edge_freq_grid, darkphoton_dict)
+        assert_approx_fd_valid(output, edge_freq_grid)
+
+    def test_jit(self, model, test_freq_grid, darkphoton_dict):
+        """Model is JIT-compiled (via fixture); verify valid output on production grid."""
+        output = model(test_freq_grid, darkphoton_dict)
+        assert_approx_fd_valid(output, test_freq_grid)
+
+    def test_vmap(self, model, test_freq_grid, darkphoton_dict):
+        fs, batch_size = test_freq_grid, 4
+        out = jax.vmap(lambda p: model(fs, p))(batch_dict(darkphoton_dict, batch_size))
+        assert out["p"].shape == (batch_size, len(fs))
+        assert jnp.all(jnp.isfinite(out["p"]))
+
+    def test_repr(self):
+        assert repr(DarkPhotonWaveform(IMRPhenomD(f_ref=20.0))) == (
+            "DarkPhotonWaveform(base_waveform=IMRPhenomD(f_ref=20.0))"
+        )
+
+    def test_parameter_names(self):
+        dp = DarkPhotonWaveform(IMRPhenomD(f_ref=20.0))
+        assert dp.parameter_names == (
+            *IMRPhenomD(f_ref=20.0).parameter_names,
+            "q1",
+            "q2",
+        )
+
+    # --- edge cases ---
+    def test_zero_charge_difference(self, model, edge_freq_grid, darkphoton_dict):
+        """sigma_1 = sigma_2: no dark-photon dipole contribution, amplitude vanishes."""
+        params = {**darkphoton_dict, "sigma_1": 0.2, "sigma_2": 0.2}
+        output = model(edge_freq_grid, params)
+        assert_approx_fd_valid(output, edge_freq_grid)
+        assert jnp.allclose(output["p"], 0.0)
+        assert jnp.allclose(output["c"], 0.0)
+
+    def test_face_on(self, model, edge_freq_grid, darkphoton_dict):
+        """iota = 0: face-on inclination."""
+        params = {**darkphoton_dict, "iota": 0.0}
+        assert_approx_fd_valid(model(edge_freq_grid, params), edge_freq_grid)
+
+    def test_edge_on(self, model, edge_freq_grid, darkphoton_dict):
+        """iota = pi/2: edge-on inclination, cross polarization vanishes."""
+        params = {**darkphoton_dict, "iota": jnp.pi / 2}
+        output = model(edge_freq_grid, params)
+        assert_approx_fd_valid(output, edge_freq_grid)
+        assert jnp.allclose(output["c"], 0.0, atol=1e-6)
 
 
 class TestWaveformPreset:
