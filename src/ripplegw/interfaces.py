@@ -15,7 +15,7 @@ from ripplegw.waveforms.IMRPhenomXP import gen_IMRPhenomXP_hphc
 from ripplegw.waveforms.IMRPhenomXPHM import generate_xphm
 from ripplegw.waveforms.SineGaussian import gen_SineGaussian_hphc
 from ripplegw.conversions import Mc_eta_to_ms
-from ripplegw.constants import MTSUN
+from ripplegw.constants import MTSUN, PI
 
 
 class Waveform(ABC):
@@ -884,7 +884,7 @@ class DarkPhotonWaveform(Waveform):
         total_mass = params["Mc"] * jnp.power(params["eta"], -3.0 / 5.0)
         total_mass *= MTSUN
         conv = (
-            (jnp.pi ** (2.0 / 3.0) * delta)
+            (PI ** (2.0 / 3.0) * delta)
             / (4.0 * total_mass ** (1.0 / 3.0))
             * freq ** (2.0 / 3.0)
         )
@@ -917,10 +917,11 @@ class DarkPhotonWaveform(Waveform):
         phase = jnp.unwrap(jnp.angle(base_hphc["p"]))
 
         scale = self._amplitude_scale(frequency, params)
-        phase_EM = phase / 2.0 + phase_c
+        # base_waveform's SPA phase embeds a -PI/4 correction; strip it before
+        # halving (else it becomes -PI/8) and reapply it at full weight after
+        phase_EM = (phase + PI / 4.0) / 2.0 - PI / 4.0 + phase_c
         amp_EM = amp * scale
 
-        # the SPA's pi/4 phase correction is absorbed in the phase_c
         return {
             "p": amp_EM * jnp.exp(1j * phase_EM),
             "c": amp_EM * jnp.cos(iota) * (-1j) * jnp.exp(1j * phase_EM),
