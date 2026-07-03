@@ -15,7 +15,7 @@ from ripplegw.waveforms.IMRPhenomXP import gen_IMRPhenomXP_hphc
 from ripplegw.waveforms.IMRPhenomXPHM import generate_xphm
 from ripplegw.waveforms.SineGaussian import gen_SineGaussian_hphc
 from ripplegw.conversions import Mc_eta_to_ms
-from ripplegw.constants import MTSUN, PI
+from ripplegw.constants import MTSUN, PI, TWO_PI
 
 
 class Waveform(ABC):
@@ -861,7 +861,172 @@ class DarkPhotonWaveform(Waveform):
 
     @property
     def parameter_names(self) -> tuple[str, ...]:
-        return (*self.base_waveform.parameter_names, "q1", "q2")
+        return (*self.base_waveform.parameter_names, "sigma_1", "sigma_2")
+
+    def _calc_fE(self, sigma_1, sigma_2, eta):
+        q = (1.0 - jnp.sqrt(1.0 - 4.0 * eta)) / (1.0 + jnp.sqrt(1.0 - 4.0 * eta))
+        G12 = 1.0 - sigma_1 * sigma_2
+        X1 = 1.0 / (1.0 + q)
+        X2 = q / (1.0 + q)
+        term = (
+            -1.0
+            / 3.0
+            / G12**2
+            * (
+                G12**2 * ((1.0 + eta) / 4.0 + 3.0 / G12)
+                - 1.0
+                - X1 * sigma_2**2 * q
+                - X2 * sigma_1**2 / q
+                + 2.0 * sigma_1 * sigma_2
+            )
+        )
+        return term
+
+    def _calc_fgamma(self, sigma_1, sigma_2, eta):
+        q = (1.0 - jnp.sqrt(1.0 - 4.0 * eta)) / (1.0 + jnp.sqrt(1.0 - 4.0 * eta))
+        G12 = 1.0 - sigma_1 * sigma_2
+        X1 = 1.0 / (1.0 + q)
+        X2 = q / (1.0 + q)
+        term = (
+            1.0
+            / 6.0
+            / G12**2
+            * (
+                G12**2 * (1.0 - 2.0 * eta)
+                + 3.0 * G12
+                + 2.0
+                + 2.0 * X1 * sigma_2**2 * q
+                + 2.0 * X2 * sigma_1**2 / q
+                - 4.0 * sigma_1 * sigma_2
+            )
+        )
+        return term
+
+    def _calc_fT1byr2(self, sigma_1, sigma_2, eta):
+        return 16.0 * (1.0 - 4.0 * eta)
+
+    def _calc_fTv2byr(self, sigma_1, sigma_2, eta):
+        q = (1.0 - jnp.sqrt(1.0 - 4.0 * eta)) / (1.0 + jnp.sqrt(1.0 - 4.0 * eta))
+        G12 = 1.0 - sigma_1 * sigma_2
+        X1 = 1.0 / (1.0 + q)
+        X2 = q / (1.0 + q)
+        term = (
+            -8.0
+            / G12**2
+            * (
+                20.0 * (17.0 - eta)
+                + 84.0 * (sigma_1**2 * X2 / q + X1 * sigma_2**2 * q)
+                + (sigma_1 * sigma_2) ** 2 * (67.0 - 20.0 * eta)
+                - sigma_1 * sigma_2 * (491.0 - 40.0 * eta)
+            )
+        )
+        return term
+
+    def _calc_fTv4(self, sigma_1, sigma_2, eta):
+        G12 = 1.0 - sigma_1 * sigma_2
+        return (785.0 - 281.0 * sigma_1 * sigma_2) / G12 - 852.0 * eta
+
+    def _calc_fV1byr(self, sigma_1, sigma_2, eta):
+        q = (1.0 - jnp.sqrt(1.0 - 4.0 * eta)) / (1.0 + jnp.sqrt(1.0 - 4.0 * eta))
+        G12 = 1.0 - sigma_1 * sigma_2
+        X1 = 1.0 / (1.0 + q)
+        X2 = q / (1.0 + q)
+        diff = sigma_1 - sigma_2
+        term = -2.0 * (
+            2.0 * eta * diff**2
+            + 2.0 / 5.0 * (X2**2 * sigma_1 - X1**2 * sigma_2) * diff
+            - 5.0 * (sigma_1 * sigma_2) / G12**2 * diff**2
+            + (X1 - X2) * (sigma_1 * X1 + sigma_2 * X2) * diff
+            + (4.0 + X2 * sigma_1**2 / q + X1 * sigma_2**2 * q) * diff**2 / G12**2
+        )
+        return term
+
+    def _calc_fVv2(self, sigma_1, sigma_2, eta):
+        q = (1.0 - jnp.sqrt(1.0 - 4.0 * eta)) / (1.0 + jnp.sqrt(1.0 - 4.0 * eta))
+        G12 = 1.0 - sigma_1 * sigma_2
+        X1 = 1.0 / (1.0 + q)
+        X2 = q / (1.0 + q)
+        diff = sigma_1 - sigma_2
+        term = (
+            2.0 / 5.0 * (X2**2 * sigma_1 - X1**2 * sigma_2) * diff
+            + 2.0 * (X1 - X2) * (sigma_1 * X1 + sigma_2 * X2) * diff
+            + diff**2 / G12 * (2.0 + 6.0 * eta + sigma_1 * sigma_2 * (1.0 - 6.0 * eta))
+        )
+        return term
+
+    def _minus_one_pn_correction(self, sigma_1, sigma_2, eta):
+        G12 = 1.0 - sigma_1 * sigma_2
+        return -5.0 * G12 * jnp.power(sigma_1 - sigma_2, 2.0) / 3584.0 / eta
+
+    def _zero_pn_correction(self, sigma_1, sigma_2, eta):
+        q = (1.0 - jnp.sqrt(1.0 - 4.0 * eta)) / (1.0 + jnp.sqrt(1.0 - 4.0 * eta))
+        G12 = 1.0 - sigma_1 * sigma_2
+        X1 = 1.0 / (1.0 + q)
+        X2 = q / (1.0 + q)
+        diff = sigma_1 - sigma_2
+        fE = self._calc_fE(sigma_1, sigma_2, eta)
+        fgamma = self._calc_fgamma(sigma_1, sigma_2, eta)
+        fT1byr2 = self._calc_fT1byr2(sigma_1, sigma_2, eta)
+        fTv2byr = self._calc_fTv2byr(sigma_1, sigma_2, eta)
+        fTv4 = self._calc_fTv4(sigma_1, sigma_2, eta)
+        fV1byr = self._calc_fV1byr(sigma_1, sigma_2, eta)
+        fVv2 = self._calc_fVv2(sigma_1, sigma_2, eta)
+        GRterm = 3.0 / 128.0 / eta
+        term = (
+            -G12
+            / 4096.0
+            / eta
+            * (
+                5.0
+                / 168.0
+                * 2.0
+                * diff**2
+                * (336.0 * fE - 672.0 * fgamma - fT1byr2 - fTv2byr - fTv4)
+                - 96.0
+                + 10.0 * (fV1byr + fVv2)
+                + 40.0 * fgamma * diff**2
+                + 16.0 * (X2 * sigma_1 + X1 * sigma_2) ** 2
+            )
+        )
+        return term - GRterm
+
+    def _one_pn_correction(self, sigma_1, sigma_2, eta):
+        q = (1.0 - jnp.sqrt(1.0 - 4.0 * eta)) / (1.0 + jnp.sqrt(1.0 - 4.0 * eta))
+        G12 = 1.0 - sigma_1 * sigma_2
+        X1 = 1.0 / (1.0 + q)
+        X2 = q / (1.0 + q)
+        diff = sigma_1 - sigma_2
+        fE = self._calc_fE(sigma_1, sigma_2, eta)
+        fgamma = self._calc_fgamma(sigma_1, sigma_2, eta)
+        fT1byr2 = self._calc_fT1byr2(sigma_1, sigma_2, eta)
+        fTv2byr = self._calc_fTv2byr(sigma_1, sigma_2, eta)
+        fTv4 = self._calc_fTv4(sigma_1, sigma_2, eta)
+        fV1byr = self._calc_fV1byr(sigma_1, sigma_2, eta)
+        fVv2 = self._calc_fVv2(sigma_1, sigma_2, eta)
+        GRterm = 5.0 * (743.0 + 924.0 * eta) / (32256.0 * eta)
+        term = (
+            -5.0
+            * G12
+            / 1548288.0
+            / eta
+            * (
+                -32256.0 * fE
+                + (48.0 - 20.0 * fE * diff**2)
+                * (672.0 * fgamma + fT1byr2 + fTv2byr + fTv4)
+                + 5.0
+                / 224.0
+                * 2.0
+                * diff**2
+                * (672.0 * fgamma + fT1byr2 + fTv2byr + fTv4) ** 2
+                - (672.0 * fgamma + fT1byr2 + fTv2byr + fTv4 - 336.0 * fE)
+                * (
+                    10.0 * (fV1byr + fVv2)
+                    + 40.0 * fgamma * diff**2
+                    + 16.0 * (X2 * sigma_1 + X1 * sigma_2) ** 2
+                )
+            )
+        )
+        return term - GRterm
 
     def _amplitude_scale(
         self,
@@ -911,10 +1076,24 @@ class DarkPhotonWaveform(Waveform):
         # set iota to zero for easier amplitude and phase extraction
         base_params["iota"] = 0.0
         base_params["phase_c"] = 0.0
-        base_hphc = self.base_waveform(frequency / 2.0, base_params)
+        base_hphc = self.base_waveform(frequency * 2.0, base_params)
 
         amp = jnp.abs(base_hphc["p"])
         phase = jnp.unwrap(jnp.angle(base_hphc["p"]))
+
+        # Maxwell (-1, 0, +1 PN) dephasing from the dark-charge-dependent
+        # orbital-phase evolution, on top of the pure-GR quadrupole phasing
+        eta = params["eta"]
+        sigma_1 = params["sigma_1"]
+        sigma_2 = params["sigma_2"]
+        total_mass_sec = params["Mc"] * eta ** (-3.0 / 5.0) * MTSUN
+        vel = jnp.power(TWO_PI * total_mass_sec * frequency, 1.0 / 3.0)
+        dephasing = (
+            self._minus_one_pn_correction(sigma_1, sigma_2, eta) * vel ** (-7.0)
+            + self._zero_pn_correction(sigma_1, sigma_2, eta) * vel ** (-5.0)
+            + self._one_pn_correction(sigma_1, sigma_2, eta) * vel ** (-3.0)
+        )
+        phase = phase - dephasing
 
         scale = self._amplitude_scale(frequency, params)
         # base_waveform's SPA phase embeds a -PI/4 correction; strip it before

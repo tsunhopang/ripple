@@ -843,8 +843,8 @@ class TestDarkPhotonWaveform:
         dp = DarkPhotonWaveform(IMRPhenomD(f_ref=20.0))
         assert dp.parameter_names == (
             *IMRPhenomD(f_ref=20.0).parameter_names,
-            "q1",
-            "q2",
+            "sigma_1",
+            "sigma_2",
         )
 
     # --- edge cases ---
