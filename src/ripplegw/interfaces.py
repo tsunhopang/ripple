@@ -1039,14 +1039,14 @@ class DarkPhotonWaveform(Waveform):
             amp (Float[Array, " n_freq"]): Plus-polarization amplitude of the
                 base waveform, generated at ``iota=0``.
             params (dict[str, Float]): Full source parameter dictionary passed
-                to ``__call__`` (includes ``q1``, ``q2``, ``iota``, and all of
-                ``base_waveform.parameter_names``).
+                to ``__call__`` (includes ``sigma_1``, ``sigma_2``, ``iota``,
+                and all of ``base_waveform.parameter_names``).
 
         Returns:
             Float[Array, " n_freq"]: Scaled amplitude.
         """
         delta = params["sigma_1"] - params["sigma_2"]
-        total_mass = params["Mc"] * jnp.power(params["eta"], -3.0 / 5.0)
+        total_mass = params["M_c"] * jnp.power(params["eta"], -3.0 / 5.0)
         total_mass *= MTSUN
         conv = (
             (PI ** (2.0 / 3.0) * delta)
@@ -1063,13 +1063,16 @@ class DarkPhotonWaveform(Waveform):
         Args:
             frequency (Float[Array, " n_freq"]): Frequency array in Hz.
             params (dict[str, Float]): Source parameters for ``base_waveform``,
-                plus ``q1`` and ``q2`` (dark-photon charges of bodies 1 and 2).
+                plus ``sigma_1`` and ``sigma_2`` (dark-photon charge-to-mass
+                ratios of bodies 1 and 2).
 
         Returns:
             dict[str, Complex[Array, " n_freq"]]: Plus (``"p"``) and cross (``"c"``)
                 polarizations.
         """
-        base_params = {k: v for k, v in params.items() if k not in ("q1", "q2")}
+        base_params = {
+            k: v for k, v in params.items() if k not in ("sigma_1", "sigma_2")
+        }
         # extract the iota and the phase_c
         iota = base_params["iota"]
         phase_c = base_params["phase_c"]
@@ -1086,7 +1089,7 @@ class DarkPhotonWaveform(Waveform):
         eta = params["eta"]
         sigma_1 = params["sigma_1"]
         sigma_2 = params["sigma_2"]
-        total_mass_sec = params["Mc"] * eta ** (-3.0 / 5.0) * MTSUN
+        total_mass_sec = params["M_c"] * eta ** (-3.0 / 5.0) * MTSUN
         vel = jnp.power(TWO_PI * total_mass_sec * frequency, 1.0 / 3.0)
         dephasing = (
             self._minus_one_pn_correction(sigma_1, sigma_2, eta) * vel ** (-7.0)
