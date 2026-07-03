@@ -15,7 +15,7 @@ from ripplegw.waveforms.IMRPhenomXP import gen_IMRPhenomXP_hphc
 from ripplegw.waveforms.IMRPhenomXPHM import generate_xphm
 from ripplegw.waveforms.SineGaussian import gen_SineGaussian_hphc
 from ripplegw.conversions import Mc_eta_to_ms
-from ripplegw.constants import MTSUN, PI, TWO_PI
+from ripplegw.constants import MTSUN, G, EPSILON0, PI, TWO_PI
 
 
 class Waveform(ABC):
@@ -1103,6 +1103,13 @@ class DarkPhotonWaveform(Waveform):
         # halving (else it becomes -PI/8) and reapply it at full weight after
         phase_EM = (phase + PI / 4.0) / 2.0 - PI / 4.0 + phase_c
         amp_EM = amp * scale
+
+        # unit conversion, convert waveform back to Telsa-second
+        ke = 1.0 / (4.0 * PI * EPSILON0)
+        amp_EM *= jnp.sqrt(ke / G)
+
+        # convert to fT-second
+        amp_EM *= 1e15
 
         return {
             "p": amp_EM * jnp.exp(1j * phase_EM),
