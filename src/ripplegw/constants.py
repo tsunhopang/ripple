@@ -31,3 +31,6 @@ EULERGAMMA = 0.577215664901532860606512090082402431
 
 # Vacuum electric permittivity
 EPSILON0 = 8.85418782e-12
+
+# Planck mass, sqrt(hbar * c / G), in GeV
+M_PL_GEV = 1.2208901282098643e19

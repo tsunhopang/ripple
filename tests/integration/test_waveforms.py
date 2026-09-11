@@ -29,6 +29,7 @@ from ripplegw import (
     IMRPhenomXPHM,
     SineGaussian,
     DarkPhotonWaveform,
+    ScalarWaveform,
     waveform_preset,
 )
 from ripplegw.conversions import ms_to_Mc_eta, lambdas_to_lambda_tildes
@@ -67,6 +68,18 @@ def darkphoton_dict(bbh_aligned_dict):
         "sigma_2": 0.1,
         "Mc": bbh_aligned_dict["M_c"],
     }
+
+
+@pytest.fixture(scope="module")
+def scalar_dict(bbh_aligned_dict):
+    """Dict params for ScalarWaveform wrapping an aligned-spin BBH base."""
+    return {**bbh_aligned_dict, "sigma_1": 0.3, "sigma_2": 0.1}
+
+
+@pytest.fixture(scope="module")
+def scalar_freq_grid():
+    """Field-frequency grid spanning the 10-256 Hz analysis band."""
+    return jnp.linspace(10.0, 256.0, 500)
 
 
 @pytest.fixture(scope="module")
@@ -867,6 +880,122 @@ class TestDarkPhotonWaveform:
         output = model(edge_freq_grid, params)
         assert_approx_fd_valid(output, edge_freq_grid)
         assert jnp.allclose(output["c"], 0.0, atol=1e-6)
+
+
+def assert_scalar_fd_valid(output, fs):
+    """Assert single-component dict output {"s": h} is finite and complex."""
+    assert set(output) == {"s"}, f"unexpected keys {set(output)}"
+    assert output["s"].shape == fs.shape
+    assert jnp.all(jnp.isfinite(output["s"])), "s contains NaN or Inf"
+    assert jnp.iscomplexobj(output["s"]), "s is not complex-valued"
+
+
+class TestScalarWaveform:
+    @pytest.fixture(scope="class", params=[2, 3])
+    def k(self, request):
+        """Power of the scalar field in the derivative coupling."""
+        return request.param
+
+    @pytest.fixture(scope="class")
+    def model(self, k):
+        """JIT-compiled ScalarWaveform wrapping IMRPhenomD."""
+        return jax.jit(ScalarWaveform(IMRPhenomD(f_ref=20.0), k=k))
+
+    # --- top-level approximant class ---
+    def test_basic(self, model, scalar_freq_grid, scalar_dict):
+        assert_scalar_fd_valid(model(scalar_freq_grid, scalar_dict), scalar_freq_grid)
+
+    def test_jit(self, model, test_freq_grid, scalar_dict):
+        """Model is JIT-compiled (via fixture); verify valid output on production grid."""
+        assert_scalar_fd_valid(model(test_freq_grid, scalar_dict), test_freq_grid)
+
+    def test_vmap(self, model, scalar_freq_grid, scalar_dict):
+        fs, batch_size = scalar_freq_grid, 4
+        out = jax.vmap(lambda p: model(fs, p))(batch_dict(scalar_dict, batch_size))
+        assert out["s"].shape == (batch_size, len(fs))
+        assert jnp.all(jnp.isfinite(out["s"]))
+
+    def test_repr(self, k):
+        assert repr(ScalarWaveform(IMRPhenomD(f_ref=20.0), k=k)) == (
+            f"ScalarWaveform(base_waveform=IMRPhenomD(f_ref=20.0), k={k})"
+        )
+
+    def test_parameter_names(self, k):
+        model = ScalarWaveform(IMRPhenomD(f_ref=20.0), k=k)
+        assert model.parameter_names == (
+            *IMRPhenomD(f_ref=20.0).parameter_names,
+            "sigma_1",
+            "sigma_2",
+        )
+
+    # --- edge cases ---
+    def test_zero_charge_difference(self, model, scalar_freq_grid, scalar_dict):
+        """sigma_1 = sigma_2: no scalar dipole, so the field vanishes."""
+        params = {**scalar_dict, "sigma_1": 0.2, "sigma_2": 0.2}
+        output = model(scalar_freq_grid, params)
+        assert_scalar_fd_valid(output, scalar_freq_grid)
+        assert jnp.allclose(output["s"], 0.0)
+
+    def test_face_on(self, model, scalar_freq_grid, scalar_dict):
+        """iota = 0: the dipole points along the line of sight, so sin(iota) kills it."""
+        params = {**scalar_dict, "iota": 0.0}
+        output = model(scalar_freq_grid, params)
+        assert_scalar_fd_valid(output, scalar_freq_grid)
+        assert jnp.allclose(output["s"], 0.0)
+
+    def test_edge_on(self, model, scalar_freq_grid, scalar_dict):
+        """iota = pi/2: edge-on inclination, where the dipole amplitude peaks."""
+        params = {**scalar_dict, "iota": jnp.pi / 2}
+        assert_scalar_fd_valid(model(scalar_freq_grid, params), scalar_freq_grid)
+
+
+class TestScalarWaveformConstruction:
+    def test_rejects_unsupported_k(self):
+        with pytest.raises(ValueError, match="k must be one of"):
+            ScalarWaveform(IMRPhenomD(f_ref=20.0), k=4)
+
+
+class TestPhaseUnwrapResolution:
+    """Both wrappers must be insensitive to the frequency resolution.
+
+    Their phase extraction unwraps the base waveform's phase, which silently
+    aliases once the advance between adjacent bins exceeds pi. A low chirp mass
+    on a coarse grid is the regime where that bites: the m=3 harmonic reaches
+    down to 2 * f_min / 3, where the time to merger is longest. Refining the
+    grid and subsampling back must reproduce the coarse result exactly.
+    """
+
+    # GW230731_215307-like: the lowest-mass event in the Aug/Sep 2023 set, on
+    # its 16 s segment. Pre-fix this reached 135% relative amplitude error.
+    PARAMS = {
+        "M_c": 9.28,
+        "eta": 0.24,
+        "s1_z": 0.0,
+        "s2_z": 0.0,
+        "d_L": 800.0,
+        "phase_c": 0.3,
+        "iota": 0.9,
+        "sigma_1": 0.3,
+        "sigma_2": 0.1,
+    }
+    REFINE = 16
+
+    @pytest.mark.parametrize(
+        "build,key",
+        [
+            (lambda b: ScalarWaveform(b, k=2), "s"),
+            (lambda b: ScalarWaveform(b, k=3), "s"),
+            (lambda b: DarkPhotonWaveform(b), "p"),
+        ],
+        ids=["scalar_k2", "scalar_k3", "dark_photon"],
+    )
+    def test_matches_refined_grid(self, build, key):
+        model = build(IMRPhenomD(f_ref=20.0))
+        coarse = jnp.arange(10.0, 256.0 + 1.0 / 32.0, 1.0 / 16.0)
+        fine = jnp.linspace(coarse[0], coarse[-1], (coarse.size - 1) * self.REFINE + 1)
+        got = model(coarse, self.PARAMS)[key]
+        want = model(fine, self.PARAMS)[key][:: self.REFINE]
+        assert jnp.allclose(got, want, rtol=1e-8, atol=1e-8 * jnp.max(jnp.abs(want)))
 
 
 class TestWaveformPreset:

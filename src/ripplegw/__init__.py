@@ -18,6 +18,7 @@ from ripplegw.interfaces import (
     IMRPhenomXPHM,
     SineGaussian,
     DarkPhotonWaveform,
+    ScalarWaveform,
     waveform_preset,
 )
 
@@ -35,5 +36,6 @@ __all__ = [
     "IMRPhenomXPHM",
     "SineGaussian",
     "DarkPhotonWaveform",
+    "ScalarWaveform",
     "waveform_preset",
 ]

@@ -15,7 +15,7 @@ from ripplegw.waveforms.IMRPhenomXP import gen_IMRPhenomXP_hphc
 from ripplegw.waveforms.IMRPhenomXPHM import generate_xphm
 from ripplegw.waveforms.SineGaussian import gen_SineGaussian_hphc
 from ripplegw.conversions import Mc_eta_to_ms
-from ripplegw.constants import MTSUN, G, EPSILON0, PI, TWO_PI
+from ripplegw.constants import MTSUN, G, C, MPC, EPSILON0, M_PL_GEV, PI, TWO_PI
 
 
 class Waveform(ABC):
@@ -24,7 +24,14 @@ class Waveform(ABC):
     Subclasses implement the frequency- (or time-) domain waveform and expose it
     via ``__call__``, returning a dictionary with polarization keys ``"p"`` (plus)
     and ``"c"`` (cross).
+
+    Attributes:
+        f_ref (float): Reference frequency in Hz, at which the phase is aligned.
+            Set by every frequency-domain model; time-domain models do not have
+            one.
     """
+
+    f_ref: float
 
     def __init__(self):
         pass
@@ -837,14 +844,63 @@ class SineGaussian(Waveform):
         return "SineGaussian()"
 
 
+def _continuous_phase(
+    strain: Complex[Array, " n_freq"],
+    frequency: Float[Array, " n_freq"],
+    f_ref: float,
+    chirp_mass_sec: Float,
+) -> Float[Array, " n_freq"]:
+    """Unwrapped strain phase, anchored so it is the true continuous phase.
+
+    Two things can go wrong with a bare ``jnp.unwrap(jnp.angle(strain))``.
+
+    It only tracks the right branch while the true phase advance between
+    adjacent bins stays below ``PI``. That advance is ``TWO_PI * df * t(f)``
+    with ``t(f)`` the time from ``f`` to merger, and ``t`` grows like
+    ``f**(-8/3)``, so a grid reaching low frequency on a short segment aliases:
+    measured 26.6 rad per bin for the ``m=3`` scalar harmonic of a 9.3 solar
+    mass chirp on a 16 s segment. The leading-order SPA phase is subtracted
+    before unwrapping and added back after, which is exact and costs no extra
+    waveform evaluation. It leaves 0.54 rad per bin in that same worst case.
+    The residual still exceeds ``PI`` below roughly 2.5 solar masses of chirp
+    mass on a 4 s segment, which is a signal longer than its own segment.
+
+    Separately, ``jnp.unwrap`` pins its first element to ``(-PI, PI]``, so its
+    output can sit a whole multiple of ``2 PI`` away from the continuous phase.
+    Rescaling that phase to another harmonic turns the offset into a spurious
+    constant, and for odd harmonics into a sign flip that switches on and off
+    as the source parameters vary. Waveforms aligned at ``f_ref`` have exactly
+    zero phase there once ``t_c`` and ``phase_c`` are zero, which pins it.
+
+    Args:
+        strain (Complex[Array, " n_freq"]): Complex strain, generated with
+            ``phase_c = 0``.
+        frequency (Float[Array, " n_freq"]): Frequency array in Hz. Must span
+            ``f_ref``, else the anchor is taken at the nearest grid edge and the
+            branch is again undetermined.
+        f_ref (float): Reference frequency of the waveform that produced
+            ``strain``, in Hz.
+        chirp_mass_sec (Float): Detector-frame chirp mass in seconds, used to
+            build the de-chirping reference.
+
+    Returns:
+        Float[Array, " n_freq"]: Continuous phase in radians.
+    """
+    # ripple's angle(h) is -Psi_standard, hence the leading sign
+    reference = -(3.0 / 128.0) * jnp.power(PI * chirp_mass_sec * frequency, -5.0 / 3.0)
+    phase = jnp.unwrap(jnp.angle(strain) - reference) + reference
+    anchor = phase[jnp.argmin(jnp.abs(frequency - f_ref))]
+    return phase - TWO_PI * jnp.round(anchor / TWO_PI)
+
+
 class DarkPhotonWaveform(Waveform):
     """Wraps a base frequency-domain waveform to model dark-photon dipole radiation.
 
-    Generates the base waveform face-on (``iota=0``), decomposes its plus and
-    cross polarizations into amplitude and phase, and reconstructs the
-    dark-photon waveform with half the base GW phase. The inclination
-    dependence (removed by generating at ``iota=0``) and the charge-dependent
-    amplitude scaling are both reintroduced in ``_amplitude_scale``.
+    Generates the base waveform face-on (``iota=0``), decomposes its plus
+    polarization into amplitude and phase, and reconstructs the dark-photon
+    waveform with half the base GW phase. The charge-dependent amplitude
+    scaling is reintroduced in ``_amplitude_scale``; the inclination
+    dependence is reapplied in ``__call__``.
 
     Attributes:
         base_waveform (Waveform): The underlying waveform model to wrap.
@@ -1033,23 +1089,29 @@ class DarkPhotonWaveform(Waveform):
         freq: Float[Array, " n_freq"],
         params: dict[str, Float],
     ) -> Float[Array, " n_freq"]:
-        """Charge- and inclination-dependent amplitude scaling.
+        """Ratio of the dark-photon dipole to the GR quadrupole amplitude.
+
+        Equals ``sqrt(2) * delta * v**2 / (4 * M_s)`` with
+        ``v = (TWO_PI * M_s * freq)**(1/3)``, ``delta = sigma_1 - sigma_2`` and
+        ``freq`` the orbital frequency. The ``sqrt(2)`` is the stationary-phase
+        Jacobian ratio between the ``m=1`` and ``m=2`` harmonics.
 
         Args:
-            amp (Float[Array, " n_freq"]): Plus-polarization amplitude of the
-                base waveform, generated at ``iota=0``.
+            freq (Float[Array, " n_freq"]): Orbital frequency array in Hz.
             params (dict[str, Float]): Full source parameter dictionary passed
                 to ``__call__`` (includes ``sigma_1``, ``sigma_2``, ``iota``,
                 and all of ``base_waveform.parameter_names``).
 
         Returns:
-            Float[Array, " n_freq"]: Scaled amplitude.
+            Float[Array, " n_freq"]: Amplitude scaling factor.
         """
         delta = params["sigma_1"] - params["sigma_2"]
         total_mass = params["M_c"] * jnp.power(params["eta"], -3.0 / 5.0)
         total_mass *= MTSUN
         conv = (
-            (PI ** (2.0 / 3.0) * delta)
+            jnp.sqrt(2.0)
+            * TWO_PI ** (2.0 / 3.0)
+            * delta
             / (4.0 * total_mass ** (1.0 / 3.0))
             * freq ** (2.0 / 3.0)
         )
@@ -1082,7 +1144,12 @@ class DarkPhotonWaveform(Waveform):
         base_hphc = self.base_waveform(frequency * 2.0, base_params)
 
         amp = jnp.abs(base_hphc["p"])
-        phase = jnp.unwrap(jnp.angle(base_hphc["p"]))
+        phase = _continuous_phase(
+            base_hphc["p"],
+            frequency * 2.0,
+            self.base_waveform.f_ref,
+            params["M_c"] * MTSUN,
+        )
 
         # Maxwell (-1, 0, +1 PN) dephasing from the dark-charge-dependent
         # orbital-phase evolution, on top of the pure-GR quadrupole phasing
@@ -1099,9 +1166,10 @@ class DarkPhotonWaveform(Waveform):
         phase = phase - dephasing
 
         scale = self._amplitude_scale(frequency, params)
-        # base_waveform's SPA phase embeds a -PI/4 correction; strip it before
-        # halving (else it becomes -PI/8) and reapply it at full weight after
-        phase_EM = (phase + PI / 4.0) / 2.0 - PI / 4.0 + phase_c
+        # ripple's angle(h) is -Psi_standard, so it carries a +PI/4 SPA term;
+        # strip it before halving (else it becomes +PI/8) and reapply it at
+        # full weight after
+        phase_EM = (phase - PI / 4.0) / 2.0 + PI / 4.0 + phase_c
         amp_EM = amp * scale
 
         # unit conversion, convert waveform back to Telsa-second
@@ -1118,6 +1186,204 @@ class DarkPhotonWaveform(Waveform):
 
     def __repr__(self):
         return f"DarkPhotonWaveform(base_waveform={self.base_waveform!r})"
+
+
+class ScalarWaveform(Waveform):
+    """Wraps a base frequency-domain waveform to model scalar dipole radiation.
+
+    Models the massless scalar dipole field radiated by a compact binary in
+    shift-symmetric ESGB gravity, coupled to a nucleon spin through the
+    derivative operator ``d_mu(phi**k)``, which produces an effective magnetic
+    field ``B_eff = eps_BD * grad(phi**k)``. Only the radiation-zone gradient is
+    kept, ``grad(phi**k) = -n_hat * d/dt(phi**k)``; the ``grad(1/R**k)`` piece is
+    suppressed by ``1 / (Omega * R)`` and dropped.
+
+    The dipole field is ``phi = phi_0(t) * sin(Psi(t))`` with ``Psi`` the orbital
+    phase, so ``d/dt(phi**k)`` carries the harmonics of
+    ``sin(Psi)**(k-1) * cos(Psi)``: a single ``m=2`` harmonic for ``k=2``, and
+    ``m=1`` plus ``m=3`` with opposite signs for ``k=3``. Each harmonic is built
+    from the base waveform evaluated at ``2 * frequency / m``, generated face-on
+    (``iota=0``) so that its plus polarization gives the bare quadrupole
+    amplitude and phase.
+
+    The field is longitudinal, pointing along the line of sight, so the output
+    has a single component keyed ``"s"`` rather than the usual plus/cross pair,
+    and carries no polarization-angle dependence.
+
+    Output is in fT-second, normalised to the benchmark couplings of
+    ``Note_pulsar_search.md`` eq. (22) and (23), so ``eps_BD`` on the detector
+    side is the dimensionless ratio ``(Lambda_ref / Lambda_k)**k`` with
+    ``Lambda_ref = 0.5 GeV`` for ``k=2`` and ``0.01 GeV`` for ``k=3``. The
+    benchmarks are read as the amplitude prefactor ``B_0``; any O(1) ambiguity
+    there is absorbed by ``eps_BD``.
+
+    Attributes:
+        base_waveform (Waveform): The underlying waveform model to wrap.
+        k (int): Power of the scalar field in the derivative coupling, 2 or 3.
+    """
+
+    base_waveform: Waveform
+    k: int
+
+    #: Harmonics of ``sin(Psi)**(k-1) * cos(Psi)`` as
+    #: ``(m, coefficient, constant phase offset)``.
+    _HARMONICS: dict[int, tuple[tuple[int, float, float], ...]] = {
+        2: ((2, 0.5, -PI / 2.0),),
+        3: ((1, 0.25, 0.0), (3, 0.25, PI)),
+    }
+    #: Effective-field benchmarks in fT, ``Note_pulsar_search.md`` eq. (22), (23).
+    _B_REF: dict[int, float] = {2: 0.019, 3: 7.0e-3}
+    #: Reference field amplitude of the benchmarks, in GeV.
+    _PHI_REF: float = 1.0e-6
+    #: Reference frequency of the benchmarks, in Hz.
+    _F_REF: float = 50.0
+
+    def __init__(self, base_waveform: Waveform, k: int = 2) -> None:
+        """
+        Args:
+            base_waveform (Waveform): Waveform instance to wrap, e.g. ``IMRPhenomD()``.
+            k (int): Power of the scalar field in the derivative coupling,
+                either 2 or 3.
+        """
+        if k not in self._HARMONICS:
+            raise ValueError(f"k must be one of {tuple(self._HARMONICS)}, got {k}")
+        self.base_waveform = base_waveform
+        self.k = k
+
+    @property
+    def parameter_names(self) -> tuple[str, ...]:
+        return (*self.base_waveform.parameter_names, "sigma_1", "sigma_2")
+
+    def _minus_one_pn_correction(
+        self, sigma_1: Float, sigma_2: Float, eta: Float
+    ) -> Float:
+        """Scalar dipole dephasing at -1PN.
+
+        Scalar dipole radiation drains orbital energy at
+        ``P_dip = eta**2 * (sigma_1 - sigma_2)**2 * v**8 / (12 * pi * G)``, one
+        PN order below the GR quadrupole, so it enters the phasing at ``v**-7``.
+        Not yet derived in ripple's phasing convention; returns zero.
+
+        Args:
+            sigma_1 (Float): Scalar charge-to-mass ratio of body 1.
+            sigma_2 (Float): Scalar charge-to-mass ratio of body 2.
+            eta (Float): Symmetric mass ratio.
+
+        Returns:
+            Float: Dephasing coefficient, currently zero.
+        """
+        return 0.0
+
+    def _harmonic(
+        self,
+        frequency: Float[Array, " n_freq"],
+        params: dict[str, Float],
+        m: int,
+        coeff: float,
+        offset: float,
+    ) -> Complex[Array, " n_freq"]:
+        """Evaluate a single harmonic of ``grad(phi**k)``.
+
+        Args:
+            frequency (Float[Array, " n_freq"]): Field frequency array in Hz.
+            params (dict[str, Float]): Source parameters, as passed to ``__call__``.
+            m (int): Harmonic number, so the orbital frequency is ``frequency / m``.
+            coeff (float): Coefficient of this harmonic in
+                ``sin(Psi)**(k-1) * cos(Psi)``.
+            offset (float): Constant phase offset of this harmonic, in radians.
+
+        Returns:
+            Complex[Array, " n_freq"]: Harmonic contribution in fT-second.
+        """
+        base_params = {
+            key: value
+            for key, value in params.items()
+            if key not in ("sigma_1", "sigma_2")
+        }
+        # extract the iota and the phase_c
+        iota = base_params["iota"]
+        phase_c = base_params["phase_c"]
+        # set iota to zero for easier amplitude and phase extraction
+        base_params["iota"] = 0.0
+        base_params["phase_c"] = 0.0
+        base_hphc = self.base_waveform(2.0 * frequency / m, base_params)
+
+        amp = jnp.abs(base_hphc["p"])
+        phase = _continuous_phase(
+            base_hphc["p"],
+            2.0 * frequency / m,
+            self.base_waveform.f_ref,
+            params["M_c"] * MTSUN,
+        )
+
+        eta = params["eta"]
+        total_mass_sec = params["M_c"] * eta ** (-3.0 / 5.0) * MTSUN
+        reduced_mass_sec = eta * total_mass_sec
+        dist_sec = params["d_L"] * MPC / C
+        orb_freq = frequency / m
+        vel = jnp.power(TWO_PI * total_mass_sec * orb_freq, 1.0 / 3.0)
+
+        # scalar dipole dephasing, on top of the pure-GR quadrupole phasing;
+        # applied before the harmonic rescaling below
+        phase = phase - self._minus_one_pn_correction(
+            params["sigma_1"], params["sigma_2"], eta
+        ) * vel ** (-7.0)
+
+        # the sign of the charge difference is degenerate with a PI shift of
+        # phase_c, so only its magnitude is used
+        delta = jnp.abs(params["sigma_1"] - params["sigma_2"])
+        field = (
+            M_PL_GEV
+            * reduced_mass_sec
+            * delta
+            * jnp.sin(iota)
+            * vel
+            / (4.0 * PI * dist_sec)
+        )
+        field_amp = (
+            self._B_REF[self.k]
+            * (orb_freq / self._F_REF)
+            * jnp.power(field / self._PHI_REF, self.k)
+        )
+        # leading-order GR quadrupole amplitude, used to strip the one power of
+        # the base amplitude that the scalar harmonic inherits from it
+        gw_amp = 4.0 * reduced_mass_sec * vel**2.0 / dist_sec
+        # sqrt(2 / m) is the stationary-phase Jacobian ratio, since the base
+        # waveform's m=2 harmonic sweeps twice the orbital frequency
+        scale = coeff * jnp.sqrt(2.0 / m) * field_amp / gw_amp
+
+        # ripple's angle(h) is -Psi_standard, so it carries a +PI/4 SPA term;
+        # strip it before rescaling to the m-th harmonic and reapply it at full
+        # weight after
+        phase_s = 0.5 * m * (phase - PI / 4.0) + PI / 4.0 + m * phase_c + offset
+        return amp * scale * jnp.exp(1j * phase_s)
+
+    def __call__(
+        self, frequency: Float[Array, " n_freq"], params: dict[str, Float]
+    ) -> dict[str, Complex[Array, " n_freq"]]:
+        """Evaluate the scalar effective-field waveform.
+
+        Args:
+            frequency (Float[Array, " n_freq"]): Field frequency array in Hz.
+                This is a harmonic of the orbital frequency, not the GW
+                frequency. The array must be restricted to the analysis band,
+                since the phase unwrapping couples all of its entries.
+            params (dict[str, Float]): Source parameters for ``base_waveform``,
+                plus ``sigma_1`` and ``sigma_2`` (scalar charge-to-mass ratios
+                of bodies 1 and 2).
+
+        Returns:
+            dict[str, Complex[Array, " n_freq"]]: Longitudinal component
+                (``"s"``) of ``grad(phi**k) / eps_BD`` in fT-second.
+        """
+        harmonics = [
+            self._harmonic(frequency, params, m, coeff, offset)
+            for m, coeff, offset in self._HARMONICS[self.k]
+        ]
+        return {"s": sum(harmonics[1:], start=harmonics[0])}
+
+    def __repr__(self):
+        return f"ScalarWaveform(base_waveform={self.base_waveform!r}, k={self.k})"
 
 
 #: Mapping from model name strings to ``Waveform`` subclasses.
