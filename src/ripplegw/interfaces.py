@@ -15,7 +15,20 @@ from ripplegw.waveforms.IMRPhenomXP import gen_IMRPhenomXP_hphc
 from ripplegw.waveforms.IMRPhenomXPHM import generate_xphm
 from ripplegw.waveforms.SineGaussian import gen_SineGaussian_hphc
 from ripplegw.conversions import Mc_eta_to_ms
-from ripplegw.constants import MTSUN, G, C, MPC, EPSILON0, M_PL_GEV, PI, TWO_PI
+from ripplegw.constants import (
+    MTSUN,
+    G,
+    C,
+    MPC,
+    EPSILON0,
+    M_PL_GEV,
+    M_PROTON_GEV,
+    E_CHARGE_HL,
+    HZ_GEV,
+    FT_GEV2,
+    PI,
+    TWO_PI,
+)
 
 
 class Waveform(ABC):
@@ -1210,12 +1223,14 @@ class ScalarWaveform(Waveform):
     has a single component keyed ``"s"`` rather than the usual plus/cross pair,
     and carries no polarization-angle dependence.
 
-    Output is in fT-second, normalised to the benchmark couplings of
-    ``Note_pulsar_search.md`` eq. (22) and (23), so ``eps_BD`` on the detector
-    side is the dimensionless ratio ``(Lambda_ref / Lambda_k)**k`` with
-    ``Lambda_ref = 0.5 GeV`` for ``k=2`` and ``0.01 GeV`` for ``k=3``. The
-    benchmarks are read as the amplitude prefactor ``B_0``; any O(1) ambiguity
-    there is absorbed by ``eps_BD``.
+    Output is in fT-second, from ``Note_pulsar_search.md`` eq. (20),
+    ``B_eff = 4 m_N grad(phi**k) / (g_N e Lambda_c**k)``, evaluated proton-only
+    at the reference cutoff ``Lambda_ref = 1.160 GeV`` for ``k=2`` and
+    ``10.03 MeV`` for ``k=3``, the ``C_p = C_n = 1`` solar Fe-57 bounds of that
+    note's Table 1. The sampled coupling is the whole Lagrangian coefficient
+    ``C_N / Lambda_c**k``, so ``eps_BD`` on the detector side is the
+    dimensionless ``C_N * (Lambda_ref / Lambda_c)**k``, and ``eps_BD <= 1`` is
+    the region the solar bound already allows.
 
     Attributes:
         base_waveform (Waveform): The underlying waveform model to wrap.
@@ -1231,12 +1246,13 @@ class ScalarWaveform(Waveform):
         2: ((2, 0.5, -PI / 2.0),),
         3: ((1, 0.25, 0.0), (3, 0.25, PI)),
     }
-    #: Effective-field benchmarks in fT, ``Note_pulsar_search.md`` eq. (22), (23).
-    _B_REF: dict[int, float] = {2: 0.019, 3: 7.0e-3}
-    #: Reference field amplitude of the benchmarks, in GeV.
-    _PHI_REF: float = 1.0e-6
-    #: Reference frequency of the benchmarks, in Hz.
-    _F_REF: float = 50.0
+    #: Reference cutoff scale in GeV: the ``C_p = C_n = 1`` solar Fe-57 bounds of
+    #: ``Note_pulsar_search.md`` Table 1, so ``eps_BD = (_LAMBDA_REF / Lambda_k)**k``
+    #: and ``eps_BD <= 1`` is the region that bound already allows.
+    _LAMBDA_REF: dict[int, float] = {2: 1.160, 3: 1.003e-2}
+    #: Nucleon g-factor, ``Note_pulsar_search.md`` eq. (15); proton-only, as in the
+    #: benchmarks of eq. (22) and (23).
+    _G_N: float = 5.59
 
     def __init__(self, base_waveform: Waveform, k: int = 2) -> None:
         """
@@ -1340,10 +1356,19 @@ class ScalarWaveform(Waveform):
             * vel
             / (4.0 * PI * dist_sec)
         )
+        # Note_pulsar_search.md eq. (20), proton-only. In the radiation zone
+        # |grad(phi**k)| = k * field**k * 2 pi * orb_freq; the harmonic content of
+        # sin(Psi)**(k-1) cos(Psi) is applied separately through _HARMONICS.
         field_amp = (
-            self._B_REF[self.k]
-            * (orb_freq / self._F_REF)
-            * jnp.power(field / self._PHI_REF, self.k)
+            4.0
+            * self.k
+            * M_PROTON_GEV
+            / (self._G_N * E_CHARGE_HL * self._LAMBDA_REF[self.k] ** self.k)
+            * jnp.power(field, self.k)
+            * TWO_PI
+            * orb_freq
+            * HZ_GEV
+            / FT_GEV2
         )
         # leading-order GR quadrupole amplitude, used to strip the one power of
         # the base amplitude that the scalar harmonic inherits from it

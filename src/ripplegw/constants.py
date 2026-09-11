@@ -34,3 +34,15 @@ EPSILON0 = 8.85418782e-12
 
 # Planck mass, sqrt(hbar * c / G), in GeV
 M_PL_GEV = 1.2208901282098643e19
+
+# Proton mass, in GeV
+M_PROTON_GEV = 0.93827208816
+
+# Elementary charge in Heaviside-Lorentz natural units, sqrt(4 * pi * alpha)
+E_CHARGE_HL = 0.30282212087208876
+
+# Frequency in GeV per Hz, i.e. hbar
+HZ_GEV = 6.582119569e-25
+
+# Magnetic field in GeV^2 per femtotesla, from B**2 / (2 * mu_0); 1 T = 195.353 eV^2
+FT_GEV2 = 1.9535277119376827e-31
