@@ -24,6 +24,8 @@ from ripplegw.constants import (
     M_PL_GEV,
     M_PROTON_GEV,
     E_CHARGE_HL,
+    V_H_GEV,
+    G_XE129,
     HZ_GEV,
     FT_GEV2,
     PI,
@@ -915,11 +917,27 @@ class DarkPhotonWaveform(Waveform):
     scaling is reintroduced in ``_amplitude_scale``; the inclination
     dependence is reapplied in ``__call__``.
 
+    Output is the effective magnetic field felt by the sensor nucleus, in
+    fT-second, from ``Note_pulsar_search.md`` eq. (14),
+    ``B_eff = 8 m_N v_h C_N B' / (g_N e Lambda**2)``, with the free-nucleon
+    ``g_N`` replaced by the nuclear g-factor of the sensor. The ``kappa_Xe`` of
+    ``transfer_function.tex`` gives the sensor response as
+    ``2 (sigma_p f^p + sigma_n f^n) / (hbar gamma_Xe)`` times the dark field; for
+    129Xe the Schmidt model sets ``sigma_p = 0`` and ``sigma_n = 1``, so at
+    ``C_p = C_n = 1`` that factor is unity and only the nuclear gyromagnetic
+    ratio survives. ``M_PROTON_GEV`` appears through the nuclear magneton
+    ``mu_N = e / (2 m_p)``, not as a proton-only assumption. The sampled
+    ``Lambda`` is therefore directly the ``Lambda_D`` of that note's Table 1,
+    whose ``C_p = C_n = 1`` solar Fe-57 bound is 21.4 TeV.
+
     Attributes:
         base_waveform (Waveform): The underlying waveform model to wrap.
     """
 
     base_waveform: Waveform
+
+    #: Nuclear g-factor of the sensor nucleus, 129Xe.
+    _G_N: float = G_XE129
 
     def __init__(self, base_waveform: Waveform) -> None:
         """
@@ -930,8 +948,18 @@ class DarkPhotonWaveform(Waveform):
 
     @property
     def parameter_names(self) -> tuple[str, ...]:
-        return (*self.base_waveform.parameter_names, "sigma_1", "sigma_2")
+        return (*self.base_waveform.parameter_names, "sigma_1", "sigma_2", "Lambda")
 
+    # The _calc_f* helpers below, and the sigma-dependent parts of
+    # _zero_pn_correction and _one_pn_correction, are the charged-binary (Maxwell)
+    # PN phasing. They are NOT covered by Note_pulsar_search.md or
+    # Scalar_Wave_BBH.md, so they need their own reference to be checked against.
+    # What has been verified: all of them reduce the dephasing to exactly zero at
+    # sigma_1 = sigma_2 = 0, and the -1PN coefficient below is reproduced by an
+    # independent stationary-phase derivation. Two things to re-check against the
+    # source: _calc_fT1byr2 ignores sigma_1 and sigma_2 entirely, the only helper
+    # here with no charge dependence, and _calc_fTv4 divides by G12 where every
+    # sibling divides by G12**2.
     def _calc_fE(self, sigma_1, sigma_2, eta):
         q = (1.0 - jnp.sqrt(1.0 - 4.0 * eta)) / (1.0 + jnp.sqrt(1.0 - 4.0 * eta))
         G12 = 1.0 - sigma_1 * sigma_2
@@ -1139,14 +1167,15 @@ class DarkPhotonWaveform(Waveform):
             frequency (Float[Array, " n_freq"]): Frequency array in Hz.
             params (dict[str, Float]): Source parameters for ``base_waveform``,
                 plus ``sigma_1`` and ``sigma_2`` (dark-photon charge-to-mass
-                ratios of bodies 1 and 2).
+                ratios of bodies 1 and 2) and ``Lambda`` (the dipole-operator
+                cutoff in GeV).
 
         Returns:
             dict[str, Complex[Array, " n_freq"]]: Plus (``"p"``) and cross (``"c"``)
-                polarizations.
+                polarizations of the effective magnetic field, in fT-second.
         """
         base_params = {
-            k: v for k, v in params.items() if k not in ("sigma_1", "sigma_2")
+            k: v for k, v in params.items() if k not in ("sigma_1", "sigma_2", "Lambda")
         }
         # extract the iota and the phase_c
         iota = base_params["iota"]
@@ -1192,6 +1221,23 @@ class DarkPhotonWaveform(Waveform):
         # convert to fT-second
         amp_EM *= 1e15
 
+        # Note_pulsar_search.md eq. (14) with the free-nucleon g_N replaced by the
+        # nuclear g-factor of 129Xe, which is what the sensor spin actually responds
+        # to. The (sigma_p C_p + sigma_n C_n) factor in the kappa_Xe of
+        # transfer_function.tex is unity for 129Xe under the Schmidt model at
+        # C_p = C_n = 1.
+        # OPEN QUESTION: the factor 8 follows from Note_pulsar_search.md eq. (1)/(5),
+        # which carries no 1/2, but that note's Table 1 writes the same operator as
+        # v_h/(2 Lambda_D^2) and it is that row's 21.4 TeV that jim pins as Lambda_ref.
+        # If Table 1 means the 1/2-normalized operator, this should be 4 and the
+        # reported Lambda is off by sqrt(2). Pending confirmation from the note's author.
+        amp_EM *= (
+            8.0
+            * M_PROTON_GEV
+            * V_H_GEV
+            / (self._G_N * E_CHARGE_HL * params["Lambda"] ** 2)
+        )
+
         return {
             "p": amp_EM * jnp.exp(1j * phase_EM),
             "c": amp_EM * jnp.cos(iota) * (-1j) * jnp.exp(1j * phase_EM),
@@ -1207,9 +1253,9 @@ class ScalarWaveform(Waveform):
     Models the massless scalar dipole field radiated by a compact binary in
     shift-symmetric ESGB gravity, coupled to a nucleon spin through the
     derivative operator ``d_mu(phi**k)``, which produces an effective magnetic
-    field ``B_eff = eps_BD * grad(phi**k)``. Only the radiation-zone gradient is
-    kept, ``grad(phi**k) = -n_hat * d/dt(phi**k)``; the ``grad(1/R**k)`` piece is
-    suppressed by ``1 / (Omega * R)`` and dropped.
+    field ``B_eff`` proportional to ``grad(phi**k)``. Only the radiation-zone
+    gradient is kept, ``grad(phi**k) = -n_hat * d/dt(phi**k)``; the
+    ``grad(1/R**k)`` piece is suppressed by ``1 / (Omega * R)`` and dropped.
 
     The dipole field is ``phi = phi_0(t) * sin(Psi(t))`` with ``Psi`` the orbital
     phase, so ``d/dt(phi**k)`` carries the harmonics of
@@ -1223,14 +1269,26 @@ class ScalarWaveform(Waveform):
     has a single component keyed ``"s"`` rather than the usual plus/cross pair,
     and carries no polarization-angle dependence.
 
-    Output is in fT-second, from ``Note_pulsar_search.md`` eq. (20),
-    ``B_eff = 4 m_N grad(phi**k) / (g_N e Lambda_c**k)``, evaluated proton-only
-    at the reference cutoff ``Lambda_ref = 1.160 GeV`` for ``k=2`` and
-    ``10.03 MeV`` for ``k=3``, the ``C_p = C_n = 1`` solar Fe-57 bounds of that
-    note's Table 1. The sampled coupling is the whole Lagrangian coefficient
-    ``C_N / Lambda_c**k``, so ``eps_BD`` on the detector side is the
-    dimensionless ``C_N * (Lambda_ref / Lambda_c)**k``, and ``eps_BD <= 1`` is
-    the region the solar bound already allows.
+    Only the dipole channel is modelled. ``Scalar_Wave_BBH.md`` also carries a
+    scalar quadrupole set by ``alpha_Q = (m_2 sigma_1 + m_1 sigma_2) / M``, which
+    is suppressed by one power of ``v`` relative to the dipole everywhere except
+    near equal mass. There ``sigma_1 - sigma_2 -> 0`` and the quadrupole becomes
+    the leading channel, so this model returns a vanishing signal for a
+    near-equal-mass binary when it should not.
+
+    Output is the effective magnetic field felt by the sensor nucleus, in
+    fT-second, from ``Note_pulsar_search.md`` eq. (20),
+    ``B_eff = 4 m_N grad(phi**k) / (g_N e Lambda**k)``, with the free-nucleon
+    ``g_N`` replaced by the nuclear g-factor of the sensor.
+    The ``kappa_Xe`` of ``transfer_function.tex`` gives the sensor response as
+    ``2 (sigma_p f^p + sigma_n f^n) / (hbar gamma_Xe)`` times the dark field; for
+    129Xe the Schmidt model sets ``sigma_p = 0`` and ``sigma_n = 1``, so at
+    ``C_p = C_n = 1`` that factor is unity and only the nuclear gyromagnetic
+    ratio survives. ``M_PROTON_GEV`` appears through the nuclear magneton
+    ``mu_N = e / (2 m_p)``, not as a proton-only assumption. The sampled
+    ``Lambda`` is therefore directly the ``Lambda_k`` of that note's Table 1,
+    whose ``C_p = C_n = 1`` solar Fe-57 bounds are 1.160 GeV for ``k=2`` and
+    10.03 MeV for ``k=3``.
 
     Attributes:
         base_waveform (Waveform): The underlying waveform model to wrap.
@@ -1246,13 +1304,8 @@ class ScalarWaveform(Waveform):
         2: ((2, 0.5, -PI / 2.0),),
         3: ((1, 0.25, 0.0), (3, 0.25, PI)),
     }
-    #: Reference cutoff scale in GeV: the ``C_p = C_n = 1`` solar Fe-57 bounds of
-    #: ``Note_pulsar_search.md`` Table 1, so ``eps_BD = (_LAMBDA_REF / Lambda_k)**k``
-    #: and ``eps_BD <= 1`` is the region that bound already allows.
-    _LAMBDA_REF: dict[int, float] = {2: 1.160, 3: 1.003e-2}
-    #: Nucleon g-factor, ``Note_pulsar_search.md`` eq. (15); proton-only, as in the
-    #: benchmarks of eq. (22) and (23).
-    _G_N: float = 5.59
+    #: Nuclear g-factor of the sensor nucleus, 129Xe.
+    _G_N: float = G_XE129
 
     def __init__(self, base_waveform: Waveform, k: int = 2) -> None:
         """
@@ -1268,7 +1321,7 @@ class ScalarWaveform(Waveform):
 
     @property
     def parameter_names(self) -> tuple[str, ...]:
-        return (*self.base_waveform.parameter_names, "sigma_1", "sigma_2")
+        return (*self.base_waveform.parameter_names, "sigma_1", "sigma_2", "Lambda")
 
     def _minus_one_pn_correction(
         self, sigma_1: Float, sigma_2: Float, eta: Float
@@ -1278,7 +1331,18 @@ class ScalarWaveform(Waveform):
         Scalar dipole radiation drains orbital energy at
         ``P_dip = eta**2 * (sigma_1 - sigma_2)**2 * v**8 / (12 * pi * G)``, one
         PN order below the GR quadrupole, so it enters the phasing at ``v**-7``.
-        Not yet derived in ripple's phasing convention; returns zero.
+
+        A relative flux correction ``eps v**n`` shifts the ``m=2`` stationary-phase
+        phase by ``eps v**(n-5) (1/(n-5) - 1/(n-8)) * 5/(16 eta)``, which at
+        ``n = 0`` reproduces the familiar ``3 / (128 eta v**5)`` and so fixes the
+        convention. A dipole is ``n = -2``, giving ``-3 eps v**-7 / (224 eta)``,
+        and ``Scalar_Wave_BBH.md`` eq. (45) gives
+        ``eps = 5 (sigma_1 - sigma_2)**2 / (384 pi)``.
+
+        Strip the ``G12`` of ``DarkPhotonWaveform._minus_one_pn_correction`` and
+        this is that coefficient over ``8 pi``, the ratio of the two dipole-flux
+        prefactors ``(1 / 12 pi) / (2 / 3)``. No ``G12`` appears here because the
+        scalar inspiral is derived with pure-GR Kepler.
 
         Args:
             sigma_1 (Float): Scalar charge-to-mass ratio of body 1.
@@ -1286,9 +1350,9 @@ class ScalarWaveform(Waveform):
             eta (Float): Symmetric mass ratio.
 
         Returns:
-            Float: Dephasing coefficient, currently zero.
+            Float: Dephasing coefficient, to be multiplied by ``v**-7``.
         """
-        return 0.0
+        return -5.0 * jnp.power(sigma_1 - sigma_2, 2.0) / (28672.0 * PI * eta)
 
     def _harmonic(
         self,
@@ -1314,7 +1378,7 @@ class ScalarWaveform(Waveform):
         base_params = {
             key: value
             for key, value in params.items()
-            if key not in ("sigma_1", "sigma_2")
+            if key not in ("sigma_1", "sigma_2", "Lambda")
         }
         # extract the iota and the phase_c
         iota = base_params["iota"]
@@ -1356,14 +1420,15 @@ class ScalarWaveform(Waveform):
             * vel
             / (4.0 * PI * dist_sec)
         )
-        # Note_pulsar_search.md eq. (20), proton-only. In the radiation zone
-        # |grad(phi**k)| = k * field**k * 2 pi * orb_freq; the harmonic content of
-        # sin(Psi)**(k-1) cos(Psi) is applied separately through _HARMONICS.
+        # Note_pulsar_search.md eq. (20), with the sensor's nuclear g-factor. In
+        # the radiation zone |grad(phi**k)| = k * field**k * 2 pi * orb_freq; the
+        # harmonic content of sin(Psi)**(k-1) cos(Psi) is applied separately
+        # through _HARMONICS.
         field_amp = (
             4.0
             * self.k
             * M_PROTON_GEV
-            / (self._G_N * E_CHARGE_HL * self._LAMBDA_REF[self.k] ** self.k)
+            / (self._G_N * E_CHARGE_HL * params["Lambda"] ** self.k)
             * jnp.power(field, self.k)
             * TWO_PI
             * orb_freq
@@ -1395,11 +1460,11 @@ class ScalarWaveform(Waveform):
                 since the phase unwrapping couples all of its entries.
             params (dict[str, Float]): Source parameters for ``base_waveform``,
                 plus ``sigma_1`` and ``sigma_2`` (scalar charge-to-mass ratios
-                of bodies 1 and 2).
+                of bodies 1 and 2) and ``Lambda`` (the operator cutoff in GeV).
 
         Returns:
             dict[str, Complex[Array, " n_freq"]]: Longitudinal component
-                (``"s"``) of ``grad(phi**k) / eps_BD`` in fT-second.
+                (``"s"``) of the effective magnetic field, in fT-second.
         """
         harmonics = [
             self._harmonic(frequency, params, m, coeff, offset)

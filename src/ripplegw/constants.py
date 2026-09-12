@@ -46,3 +46,11 @@ HZ_GEV = 6.582119569e-25
 
 # Magnetic field in GeV^2 per femtotesla, from B**2 / (2 * mu_0); 1 T = 195.353 eV^2
 FT_GEV2 = 1.9535277119376827e-31
+
+# Electroweak vacuum expectation value, in GeV
+V_H_GEV = 246.0
+
+# Nuclear g-factor of 129Xe, from its gyromagnetic ratio -11.777 MHz/T divided by
+# mu_N / h = 7.622593 MHz/T. The same relation gives 5.586 for the free proton and
+# -3.826 for the free neutron, matching Note_pulsar_search.md eq. (15) and (21).
+G_XE129 = -1.5450
