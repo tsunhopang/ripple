@@ -52,5 +52,10 @@ V_H_GEV = 246.0
 
 # Nuclear g-factor of 129Xe, from its gyromagnetic ratio -11.777 MHz/T divided by
 # mu_N / h = 7.622593 MHz/T. The same relation gives 5.586 for the free proton and
-# -3.826 for the free neutron, matching Note_pulsar_search.md eq. (15) and (21).
+# -3.826 for the free neutron, matching Note_pulsar_search_update.tex eq. (15)
+# and (23).
 G_XE129 = -1.5450
+
+# Gyromagnetic ratio of 129Xe, g_Xe e / (2 m_p), in GeV^-1. Quoted as
+# 0.249 GeV^-1 in Note_pulsar_search_update.tex eq. (17).
+GAMMA_XE = abs(G_XE129) * E_CHARGE_HL / (2.0 * M_PROTON_GEV)

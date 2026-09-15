@@ -918,10 +918,11 @@ class DarkPhotonWaveform(Waveform):
     dependence is reapplied in ``__call__``.
 
     Output is the effective magnetic field felt by the sensor nucleus, in
-    fT-second, from ``Note_pulsar_search.md`` eq. (14),
+    fT-second, from ``Note_pulsar_search_update.tex`` eq. (14),
     ``B_eff = 8 m_N v_h C_N B' / (g_N e Lambda**2)``, with the free-nucleon
-    ``g_N`` replaced by the nuclear g-factor of the sensor. The ``kappa_Xe`` of
-    ``transfer_function.tex`` gives the sensor response as
+    ``g_N`` replaced by the nuclear g-factor of the sensor. That reproduces the
+    eq. (17) benchmark ``B_eff = 4.4e-6 (30 TeV / Lambda_N)**2 B'`` for 129Xe.
+    The ``kappa_Xe`` of ``transfer_function.tex`` gives the sensor response as
     ``2 (sigma_p f^p + sigma_n f^n) / (hbar gamma_Xe)`` times the dark field; for
     129Xe the Schmidt model sets ``sigma_p = 0`` and ``sigma_n = 1``, so at
     ``C_p = C_n = 1`` that factor is unity and only the nuclear gyromagnetic
@@ -952,8 +953,8 @@ class DarkPhotonWaveform(Waveform):
 
     # The _calc_f* helpers below, and the sigma-dependent parts of
     # _zero_pn_correction and _one_pn_correction, are the charged-binary (Maxwell)
-    # PN phasing. They are NOT covered by Note_pulsar_search.md or
-    # Scalar_Wave_BBH.md, so they need their own reference to be checked against.
+    # PN phasing. They are NOT covered by Note_pulsar_search_update.tex or
+    # Scalar_Wave_BBH.tex, so they need their own reference to be checked against.
     # What has been verified: all of them reduce the dephasing to exactly zero at
     # sigma_1 = sigma_2 = 0, and the -1PN coefficient below is reproduced by an
     # independent stationary-phase derivation. Two things to re-check against the
@@ -1221,14 +1222,15 @@ class DarkPhotonWaveform(Waveform):
         # convert to fT-second
         amp_EM *= 1e15
 
-        # Note_pulsar_search.md eq. (14) with the free-nucleon g_N replaced by the
-        # nuclear g-factor of 129Xe, which is what the sensor spin actually responds
-        # to. The (sigma_p C_p + sigma_n C_n) factor in the kappa_Xe of
+        # Note_pulsar_search_update.tex eq. (14) with the free-nucleon g_N replaced by
+        # the nuclear g-factor of 129Xe, which is what the sensor spin actually
+        # responds to. The (sigma_p C_p + sigma_n C_n) factor in the kappa_Xe of
         # transfer_function.tex is unity for 129Xe under the Schmidt model at
         # C_p = C_n = 1.
-        # OPEN QUESTION: the factor 8 follows from Note_pulsar_search.md eq. (1)/(5),
-        # which carries no 1/2, but that note's Table 1 writes the same operator as
-        # v_h/(2 Lambda_D^2) and it is that row's 21.4 TeV that jim pins as Lambda_ref.
+        # OPEN QUESTION: the factor 8 follows from Note_pulsar_search_update.tex
+        # eq. (1)/(5), which carries no 1/2, but that note's Table 1 writes the same
+        # operator as v_h/(2 Lambda_D^2) and it is that row's 21.4 TeV that jim pins
+        # as Lambda_ref.
         # If Table 1 means the 1/2-normalized operator, this should be 4 and the
         # reported Lambda is off by sqrt(2). Pending confirmation from the note's author.
         amp_EM *= (
@@ -1269,7 +1271,7 @@ class ScalarWaveform(Waveform):
     has a single component keyed ``"s"`` rather than the usual plus/cross pair,
     and carries no polarization-angle dependence.
 
-    Only the dipole channel is modelled. ``Scalar_Wave_BBH.md`` also carries a
+    Only the dipole channel is modelled. ``Scalar_Wave_BBH.tex`` also carries a
     scalar quadrupole set by ``alpha_Q = (m_2 sigma_1 + m_1 sigma_2) / M``, which
     is suppressed by one power of ``v`` relative to the dipole everywhere except
     near equal mass. There ``sigma_1 - sigma_2 -> 0`` and the quadrupole becomes
@@ -1277,9 +1279,12 @@ class ScalarWaveform(Waveform):
     near-equal-mass binary when it should not.
 
     Output is the effective magnetic field felt by the sensor nucleus, in
-    fT-second, from ``Note_pulsar_search.md`` eq. (20),
-    ``B_eff = 4 m_N grad(phi**k) / (g_N e Lambda**k)``, with the free-nucleon
-    ``g_N`` replaced by the nuclear g-factor of the sensor.
+    fT-second, from ``Note_pulsar_search_update.tex`` eq. (22),
+    ``B_eff = 2 grad(phi**k) / (Lambda**k gamma_N) = 4 m_N grad(phi**k) / (g_N e
+    Lambda**k)``, with the free-nucleon ``g_N`` replaced by the nuclear g-factor
+    of the sensor. That reproduces the eq. (28) benchmarks for 129Xe: 0.8 fT at
+    ``k = 2, Lambda = 2 GeV`` and 6.4 fT at ``k = 3, Lambda = 0.02 GeV``, both at
+    ``phi = 1e-5 GeV`` and ``omega = 2 pi * 100 Hz``.
     The ``kappa_Xe`` of ``transfer_function.tex`` gives the sensor response as
     ``2 (sigma_p f^p + sigma_n f^n) / (hbar gamma_Xe)`` times the dark field; for
     129Xe the Schmidt model sets ``sigma_p = 0`` and ``sigma_n = 1``, so at
@@ -1336,7 +1341,7 @@ class ScalarWaveform(Waveform):
         phase by ``eps v**(n-5) (1/(n-5) - 1/(n-8)) * 5/(16 eta)``, which at
         ``n = 0`` reproduces the familiar ``3 / (128 eta v**5)`` and so fixes the
         convention. A dipole is ``n = -2``, giving ``-3 eps v**-7 / (224 eta)``,
-        and ``Scalar_Wave_BBH.md`` eq. (45) gives
+        and ``Scalar_Wave_BBH.tex`` eq. (45) gives
         ``eps = 5 (sigma_1 - sigma_2)**2 / (384 pi)``.
 
         Strip the ``G12`` of ``DarkPhotonWaveform._minus_one_pn_correction`` and
@@ -1420,10 +1425,10 @@ class ScalarWaveform(Waveform):
             * vel
             / (4.0 * PI * dist_sec)
         )
-        # Note_pulsar_search.md eq. (20), with the sensor's nuclear g-factor. In
-        # the radiation zone |grad(phi**k)| = k * field**k * 2 pi * orb_freq; the
-        # harmonic content of sin(Psi)**(k-1) cos(Psi) is applied separately
-        # through _HARMONICS.
+        # Note_pulsar_search_update.tex eq. (22), with the sensor's nuclear
+        # g-factor. In the radiation zone |grad(phi**k)| = k * field**k * 2 pi *
+        # orb_freq; the harmonic content of sin(Psi)**(k-1) cos(Psi) is applied
+        # separately through _HARMONICS.
         field_amp = (
             4.0
             * self.k
