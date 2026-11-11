@@ -73,7 +73,7 @@ def test_darkphoton_benchmark():
     assert b_eff == pytest.approx(4.4e-6, rel=2e-2)
 
 
-@pytest.mark.parametrize("k", [2, 3])
+@pytest.mark.parametrize("k", [1, 2, 3])
 def test_scalar_waveform_normalization(k):
     """ScalarWaveform's harmonics carry exactly the eq. (22) prefactor.
 

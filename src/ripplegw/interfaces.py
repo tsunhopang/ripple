@@ -1261,8 +1261,9 @@ class ScalarWaveform(Waveform):
 
     The dipole field is ``phi = phi_0(t) * sin(Psi(t))`` with ``Psi`` the orbital
     phase, so ``d/dt(phi**k)`` carries the harmonics of
-    ``sin(Psi)**(k-1) * cos(Psi)``: a single ``m=2`` harmonic for ``k=2``, and
-    ``m=1`` plus ``m=3`` with opposite signs for ``k=3``. Each harmonic is built
+    ``sin(Psi)**(k-1) * cos(Psi)``: a single ``m=1`` harmonic for ``k=1``, a
+    single ``m=2`` harmonic for ``k=2``, and ``m=1`` plus ``m=3`` with opposite
+    signs for ``k=3``. Each harmonic is built
     from the base waveform evaluated at ``2 * frequency / m``, generated face-on
     (``iota=0``) so that its plus polarization gives the bare quadrupole
     amplitude and phase.
@@ -1292,12 +1293,12 @@ class ScalarWaveform(Waveform):
     ratio survives. ``M_PROTON_GEV`` appears through the nuclear magneton
     ``mu_N = e / (2 m_p)``, not as a proton-only assumption. The sampled
     ``Lambda`` is therefore directly the ``Lambda_k`` of that note's Table 1,
-    whose ``C_p = C_n = 1`` solar Fe-57 bounds are 1.160 GeV for ``k=2`` and
-    10.03 MeV for ``k=3``.
+    whose ``C_p = C_n = 1`` solar Fe-57 bounds are 1.3e6 GeV for ``k=1``,
+    1.160 GeV for ``k=2`` and 10.03 MeV for ``k=3``.
 
     Attributes:
         base_waveform (Waveform): The underlying waveform model to wrap.
-        k (int): Power of the scalar field in the derivative coupling, 2 or 3.
+        k (int): Power of the scalar field in the derivative coupling, 1, 2 or 3.
     """
 
     base_waveform: Waveform
@@ -1306,6 +1307,7 @@ class ScalarWaveform(Waveform):
     #: Harmonics of ``sin(Psi)**(k-1) * cos(Psi)`` as
     #: ``(m, coefficient, constant phase offset)``.
     _HARMONICS: dict[int, tuple[tuple[int, float, float], ...]] = {
+        1: ((1, 1.0, 0.0),),
         2: ((2, 0.5, -PI / 2.0),),
         3: ((1, 0.25, 0.0), (3, 0.25, PI)),
     }
@@ -1317,7 +1319,7 @@ class ScalarWaveform(Waveform):
         Args:
             base_waveform (Waveform): Waveform instance to wrap, e.g. ``IMRPhenomD()``.
             k (int): Power of the scalar field in the derivative coupling,
-                either 2 or 3.
+                1, 2 or 3.
         """
         if k not in self._HARMONICS:
             raise ValueError(f"k must be one of {tuple(self._HARMONICS)}, got {k}")
